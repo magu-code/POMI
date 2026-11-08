@@ -1,0 +1,89 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]   # build automático en cada push
+  pull_request:
+  workflow_dispatch:             # también se puede lanzar a mano
+
+permissions:
+  contents: write                # necesario para publicar el release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 1) Si el proyecto ya está descomprimido en el repo, lo usa.
+      # 2) Si no, descomprime el/los .zip del repo y busca el proyecto adentro.
+      # 3) Si no encuentra nada, muestra qué archivos hay para diagnosticar.
+      - name: Preparar proyecto (descomprimir .zip si hace falta)
+        id: proj
+        run: |
+          buscar() {
+            find "$1" \( -name settings.gradle.kts -o -name settings.gradle \) \
+              -not -path "*/.git/*" -not -path "*/__MACOSX/*" | head -n1
+          }
+
+          f=$(buscar .)
+
+          if [ -z "$f" ]; then
+            echo "No hay proyecto descomprimido; buscando .zip..."
+            mkdir -p "$RUNNER_TEMP/proyecto"
+            find . -iname "*.zip" -not -path "./.git/*" -print0 |
+              while IFS= read -r -d '' z; do
+                echo "Descomprimiendo: $z"
+                unzip -q -o "$z" -d "$RUNNER_TEMP/proyecto"
+              done
+            f=$(buscar "$RUNNER_TEMP/proyecto")
+          fi
+
+          if [ -z "$f" ]; then
+            echo "::error::No se encontró settings.gradle(.kts) ni en el repo ni dentro de un .zip. Archivos del repo:"
+            find . -maxdepth 3 -not -path "./.git/*" | head -60
+            exit 1
+          fi
+
+          dir=$(realpath "$(dirname "$f")")
+          echo "Proyecto encontrado en: $dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # El proyecto no incluye gradlew, así que se instala Gradle 8.7
+      # (la misma versión de gradle-wrapper.properties).
+      - name: Instalar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Compilar APK debug
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: gradle assembleDebug --stacktrace
+
+      - name: Subir APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: PomodoroTimer-debug-apk
+          path: ${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      # Publica el APK en la sección Releases con un link de descarga directa
+      - name: Publicar release "latest"
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp "${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk" PomodoroTimer.apk
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest PomodoroTimer.apk \
+            --title "PomodoroTimer (último build)" \
+            --notes "Build automático del commit ${GITHUB_SHA::7}" \
+            --target "$GITHUB_SHA"
