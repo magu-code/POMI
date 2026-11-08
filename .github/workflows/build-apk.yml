@@ -1,0 +1,71 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]   # build automático en cada push
+  pull_request:
+  workflow_dispatch:             # también se puede lanzar a mano
+
+permissions:
+  contents: write                # necesario para publicar el release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Busca dónde está el proyecto Android (donde vive settings.gradle.kts)
+      # y, si no lo encuentra, muestra qué archivos hay en el repo.
+      - name: Detectar carpeta del proyecto
+        id: proj
+        run: |
+          f=$(find . \( -name settings.gradle.kts -o -name settings.gradle \) -not -path "./.git/*" | head -n1)
+          if [ -z "$f" ]; then
+            echo "::error::No se encontró settings.gradle(.kts) en el repo. Archivos que hay:"
+            find . -maxdepth 3 -not -path "./.git/*" | head -60
+            exit 1
+          fi
+          dir=$(dirname "$f")
+          echo "Proyecto encontrado en: $dir"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Instalar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # El proyecto no incluye gradlew, así que se instala Gradle 8.7
+      # (la misma versión de gradle-wrapper.properties).
+      - name: Instalar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Compilar APK debug
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: gradle assembleDebug --stacktrace
+
+      - name: Subir APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: PomodoroTimer-debug-apk
+          path: ${{ steps.proj.outputs.dir }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      # Publica el APK en la sección Releases con un link de descarga directa
+      - name: Publicar release "latest"
+        if: github.event_name != 'pull_request'
+        working-directory: ${{ steps.proj.outputs.dir }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk PomodoroTimer.apk
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest PomodoroTimer.apk \
+            --title "PomodoroTimer (último build)" \
+            --notes "Build automático del commit ${GITHUB_SHA::7}" \
+            --target "$GITHUB_SHA"
