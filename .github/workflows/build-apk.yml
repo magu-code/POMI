@@ -1,0 +1,59 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]   # build automático en cada push
+  pull_request:
+  workflow_dispatch:             # también se puede lanzar a mano
+
+permissions:
+  contents: write                # necesario para publicar el release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # El proyecto Android está dentro de la carpeta POMI/ del repo
+    defaults:
+      run:
+        working-directory: POMI
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # El proyecto no incluye gradlew, así que se instala Gradle 8.7
+      # (la misma versión de gradle-wrapper.properties).
+      - name: Instalar Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Compilar APK debug
+        run: gradle assembleDebug --stacktrace
+
+      - name: Subir APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: PomodoroTimer-debug-apk
+          path: POMI/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      # Publica el APK en la sección Releases con un link de descarga directa
+      - name: Publicar release "latest"
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk PomodoroTimer.apk
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest PomodoroTimer.apk \
+            --title "PomodoroTimer (último build)" \
+            --notes "Build automático del commit ${GITHUB_SHA::7}" \
+            --target "$GITHUB_SHA"
